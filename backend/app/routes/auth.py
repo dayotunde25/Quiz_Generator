@@ -12,10 +12,12 @@ from datetime import datetime, timezone, timedelta
 import secrets
 import re
 
-from app import db, redis_client, limiter
+from app import db, redis_client, limiter, mail
 from app.models.user import User
 from app.models.subscription import Subscription
 from app.utils.decorators import validate_json
+from flask import url_for, current_app
+from flask_mail import Message
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -41,6 +43,67 @@ def is_strong_password(password):
         return False, "Password must contain at least one number"
     
     return True, "Password is strong"
+
+
+def send_verification_email(user):
+    """Send email verification link to user"""
+    try:
+        token = user.verification_token
+        verification_url = url_for('auth.verify_email', token=token, _external=True)
+
+        msg = Message(
+            subject='Verify Your Quiz Maker Account',
+            recipients=[user.email],
+            sender=current_app.config.get('MAIL_DEFAULT_SENDER')
+        )
+
+        msg.html = f"""
+        <h2>Welcome to Quiz Maker!</h2>
+        <p>Hi {user.first_name},</p>
+        <p>Thank you for registering with Quiz Maker. Please verify your email address by clicking the link below:</p>
+        <p><a href="{verification_url}" style="background-color: #4F46E5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Verify Email</a></p>
+        <p>If the button doesn't work, you can copy and paste this link into your browser:</p>
+        <p>{verification_url}</p>
+        <p>This link will expire in 24 hours.</p>
+        <p>Best regards,<br>The Quiz Maker Team</p>
+        """
+
+        mail.send(msg)
+        return True
+    except Exception as e:
+        current_app.logger.error(f"Failed to send verification email: {str(e)}")
+        return False
+
+
+def send_password_reset_email(user):
+    """Send password reset link to user"""
+    try:
+        token = user.reset_token
+        reset_url = url_for('auth.reset_password', token=token, _external=True)
+
+        msg = Message(
+            subject='Reset Your Quiz Maker Password',
+            recipients=[user.email],
+            sender=current_app.config.get('MAIL_DEFAULT_SENDER')
+        )
+
+        msg.html = f"""
+        <h2>Password Reset Request</h2>
+        <p>Hi {user.first_name},</p>
+        <p>You requested a password reset for your Quiz Maker account. Click the link below to reset your password:</p>
+        <p><a href="{reset_url}" style="background-color: #4F46E5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Reset Password</a></p>
+        <p>If the button doesn't work, you can copy and paste this link into your browser:</p>
+        <p>{reset_url}</p>
+        <p>This link will expire in 1 hour.</p>
+        <p>If you didn't request this password reset, please ignore this email.</p>
+        <p>Best regards,<br>The Quiz Maker Team</p>
+        """
+
+        mail.send(msg)
+        return True
+    except Exception as e:
+        current_app.logger.error(f"Failed to send password reset email: {str(e)}")
+        return False
 
 
 @auth_bp.route('/register', methods=['POST'])
@@ -88,9 +151,10 @@ def register():
     
     # Create free subscription
     Subscription.create_free_subscription(user.id)
-    
-    # TODO: Send verification email
-    
+
+    # Send verification email
+    send_verification_email(user)
+
     # Create tokens
     access_token = create_access_token(identity=user.id)
     refresh_token = create_refresh_token(identity=user.id)
@@ -197,8 +261,9 @@ def forgot_password():
         user.reset_token = secrets.token_urlsafe(32)
         user.reset_token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
         db.session.commit()
-        
-        # TODO: Send password reset email
+
+        # Send password reset email
+        send_password_reset_email(user)
     
     # Always return success to prevent email enumeration
     return jsonify({
@@ -268,8 +333,9 @@ def resend_verification():
         # Generate new verification token
         user.verification_token = secrets.token_urlsafe(32)
         db.session.commit()
-        
-        # TODO: Send verification email
+
+        # Send verification email
+        send_verification_email(user)
     
     return jsonify({
         'message': 'If the email exists and is unverified, a verification link has been sent'
